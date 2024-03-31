@@ -4,7 +4,7 @@
 
 This is the official code repository for paper `Applying Variational Continual learning (VCL) to CNNs and ResNets: when it shines brighter than other methods`. 
 
-It contains variational implementation of CNNs and ResNets, and other utility modules to facilitate other variational layer constructions (`./src/layers/` and `./src/models`). We provide notebooks and experimental scripts of variational networks on Permuted and Split CIFAR10 and CIFAR100 datasets at the `./src` folder.
+It contains variational implementation of CNNs and ResNets, and other utility modules to facilitate other variational layer constructions (`./src/layers/` and `./src/models`). We provide notebooks and experimental scripts of variational networks on Permuted and Split CIFAR10 and CIFAR100 datasets at the `./src` folder. Refer to `./src/README.md` for more details on the notebooks.
 
 ## Experiments
 
