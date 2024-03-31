@@ -59,7 +59,7 @@ def permuted_cifar10():
 
     # Load CIFAR10 datasets with the defined transforms for each task
     cifar_train = ConcatDataset(
-        [CIFAR10(root=f"/scratch-ssd/{USER}/cache", train=True, download=False, transform=t) for t in transforms]
+        [CIFAR10(root="data", train=True, download=False, transform=t) for t in transforms]
     )
     task_size = len(cifar_train) // N_TASKS
     train_task_ids = torch.cat(
@@ -67,7 +67,7 @@ def permuted_cifar10():
     )
 
     cifar_test = ConcatDataset(
-        [CIFAR10(root=f"/scratch-ssd/{USER}/cache", train=False, download=False, transform=t) for t in transforms]
+        [CIFAR10(root="data", train=False, download=False, transform=t) for t in transforms]
     )
     task_size = len(cifar_test) // N_TASKS
     test_task_ids = torch.cat(
@@ -122,11 +122,9 @@ def split_cifar10():
     ])
 
     # download dataset
-    cifar_train = CIFAR10(root=f"/scratch-ssd/{USER}/cache", train=True, download=False, transform=transform)
-    cifar_test = CIFAR10(root=f"/scratch-ssd/{USER}/cache", train=False, download=False, transform=transform)
-    # cifar_train = CIFAR10(root=f"/scratch-ssd/oatml/data", train=True, download=False, transform=transform)
-    # cifar_test = CIFAR10(root=f"/scratch-ssd/oatml/data", train=False, download=False, transform=transform)
-    
+    cifar_train = CIFAR10(root="data", train=True, download=False, transform=transform)
+    cifar_test = CIFAR10(root="data", train=False, download=False, transform=transform)
+
     model = DiscriminativeVCL(
         in_size=CIFAR_DIM, out_size=N_CLASSES,
         layer_width=LAYER_WIDTH, n_hidden_layers=N_HIDDEN_LAYERS,
@@ -201,8 +199,8 @@ def split_cifar100():
     ])
 
     # download dataset
-    cifar_train = CIFAR100(root=f"/scratch-ssd/{USER}/cache", train=True, download=False, transform=transform)
-    cifar_test = CIFAR100(root=f"/scratch-ssd/{USER}/cache", train=False, download=False, transform=transform)
+    cifar_train = CIFAR100(root="data", train=True, download=False, transform=transform)
+    cifar_test = CIFAR100(root="data", train=False, download=False, transform=transform)
 
     model = DiscriminativeVCL(
         in_size=CIFAR_DIM, out_size=N_CLASSES,
@@ -427,11 +425,11 @@ def split_not_mnist():
     # binarize_y(c, n) is 1 when c is is the nth digit - A for task 0, B for task 1
     binarize_y = lambda y, task: (y == task).long()
 
-    # run_point_estimate_initialisation(model=model, data=not_mnist_train,
-    #                                   epochs=EPOCHS, batch_size=BATCH_SIZE,
-    #                                   device=device, multiheaded=MULTIHEADED,
-    #                                   task_ids=train_task_ids, lr=LR,
-    #                                   y_transform=binarize_y)
+    run_point_estimate_initialisation(model=model, data=not_mnist_train,
+                                      epochs=EPOCHS, batch_size=BATCH_SIZE,
+                                      device=device, multiheaded=MULTIHEADED,
+                                      task_ids=train_task_ids, lr=LR,
+                                      y_transform=binarize_y)
 
     for task_idx in range(N_TASKS):
         run_task(

@@ -55,7 +55,7 @@ def permuted_cifar10():
 
     # Load CIFAR10 datasets with the defined transforms for each task
     cifar_train = ConcatDataset(
-        [CIFAR10(root=f"/scratch-ssd/{USER}/cache", train=True, download=False, transform=t) for t in transforms]
+        [CIFAR10(root="data", train=True, download=False, transform=t) for t in transforms]
     )
     task_size = len(cifar_train) // N_TASKS
     train_task_ids = torch.cat(
@@ -63,7 +63,7 @@ def permuted_cifar10():
     )
 
     cifar_test = ConcatDataset(
-        [CIFAR10(root=f"/scratch-ssd/{USER}/cache", train=False, download=False, transform=t) for t in transforms]
+        [CIFAR10(root="data", train=False, download=False, transform=t) for t in transforms]
     )
     task_size = len(cifar_test) // N_TASKS
     test_task_ids = torch.cat(
@@ -116,10 +116,8 @@ def split_cifar10(partial=False):
     ])
 
     # download dataset
-    cifar_train = CIFAR10(root=f"/scratch-ssd/{USER}/cache", train=True, download=False, transform=transform)
-    cifar_test = CIFAR10(root=f"/scratch-ssd/{USER}/cache", train=False, download=False, transform=transform)
-    # cifar_train = CIFAR10(root=f"/scratch-ssd/oatml/data", train=True, download=False, transform=transform)
-    # cifar_test = CIFAR10(root=f"/scratch-ssd/oatml/data", train=False, download=False, transform=transform)
+    cifar_train = CIFAR10(root="data", train=True, download=False, transform=transform)
+    cifar_test = CIFAR10(root="data", train=False, download=False, transform=transform)
 
     model = ResNetVCL(
         BasicBlockVCL, [2,2,2], num_tasks=(N_TASKS if MULTIHEADED else 1),
@@ -149,11 +147,11 @@ def split_cifar10(partial=False):
     # each task is a binary classification task for a different pair of digits
     binarize_y = lambda y, task: (y == (2 * task + 1)).long()
 
-    # run_point_estimate_initialisation(model=model, data=cifar_train,
-    #                                   epochs=EPOCHS, batch_size=BATCH_SIZE,
-    #                                   device=device, multiheaded=MULTIHEADED,
-    #                                   lr=LR, task_ids=train_task_ids,
-    #                                   y_transform=binarize_y)
+    run_point_estimate_initialisation(model=model, data=cifar_train,
+                                      epochs=EPOCHS, batch_size=BATCH_SIZE,
+                                      device=device, multiheaded=MULTIHEADED,
+                                      lr=LR, task_ids=train_task_ids,
+                                      y_transform=binarize_y)
 
     for task_idx in range(N_TASKS):
         run_task(
@@ -191,11 +189,8 @@ def split_cifar100(epochs=200):
     ])
 
     # download dataset
-    # cifar_train = CIFAR10(root=f"/scratch-ssd/oatml/data", train=True, download=False, transform=transform)
-    # cifar_test = CIFAR10(root=f"/scratch-ssd/oatml/data", train=False, download=False, transform=transform)
-
-    cifar_train = CIFAR100(root=f"/scratch-ssd/{USER}/cache", train=True, download=False, transform=transform)
-    cifar_test = CIFAR100(root=f"/scratch-ssd/{USER}/cache", train=False, download=False, transform=transform)
+    cifar_train = CIFAR100(root="data", train=True, download=False, transform=transform)
+    cifar_test = CIFAR100(root="data", train=False, download=False, transform=transform)
 
     model = ResNetVCL(
         BasicBlockVCL, [2,2,2], num_tasks=(N_TASKS if MULTIHEADED else 1),
@@ -215,11 +210,11 @@ def split_cifar100(epochs=200):
     # each task is a binary classification task for a different pair of digits
     map_to_under_ten = lambda y, task: y % N_CLASSES
 
-    # run_point_estimate_initialisation(model=model, data=cifar_train,
-    #                                   epochs=EPOCHS, batch_size=BATCH_SIZE,
-    #                                   device=device, multiheaded=MULTIHEADED,
-    #                                   lr=LR, task_ids=train_task_ids,
-    #                                   y_transform=map_to_under_ten)
+    run_point_estimate_initialisation(model=model, data=cifar_train,
+                                      epochs=EPOCHS, batch_size=BATCH_SIZE,
+                                      device=device, multiheaded=MULTIHEADED,
+                                      lr=LR, task_ids=train_task_ids,
+                                      y_transform=map_to_under_ten)
 
     for task_idx in range(N_TASKS):
         run_task(
