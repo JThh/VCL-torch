@@ -52,7 +52,7 @@ def run_point_estimate_initialisation(model, data, epochs, task_ids, batch_size,
             if y_transform is not None:
                 y_true = y_transform(y_true, task_idx)
 
-            loss = model.point_estimate_loss(x, y_true, head=head)
+            loss = model.point_estimate_loss(x, y_true, head)
             loss.backward()
             optimizer.step()
 
@@ -83,6 +83,7 @@ def run_task(model, train_data, train_task_ids, test_data, test_task_ids,
         """
 
     print('TASK ', task_idx)
+    model = model.to(device)
 
     # separate optimizer for each task
     optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -112,6 +113,9 @@ def run_task(model, train_data, train_task_ids, test_data, test_task_ids,
             loss.backward()
             optimizer.step()
 
+            # Check if the parameters from SNF is being updated 
+            
+
         if summary_writer is not None:
             summary_writer.add_scalars("loss", {"TASK_" + str(task_idx): epoch_loss / len(task_data)}, epoch)
 
@@ -139,7 +143,7 @@ def run_task(model, train_data, train_task_ids, test_data, test_task_ids,
 
         task_data = task_subset(test_data, test_task_ids, test_task_idx)
 
-        x = torch.Tensor([x for x, _ in task_data])
+        x = torch.stack([torch.tensor(x) for x, _ in task_data])
         y_true = torch.Tensor([y for _, y in task_data])
         x = x.to(device)
         y_true = y_true.to(device)
@@ -149,7 +153,7 @@ def run_task(model, train_data, train_task_ids, test_data, test_task_ids,
 
         y_pred = model_cs_trained.prediction(x, head)
 
-        acc = class_accuracy(y_pred, y_true)
+        acc = class_accuracy(y_pred.to(device), y_true.to(device))
         print("After task {} perfomance on task {} is {}"
               .format(task_idx, test_task_idx, acc))
 
@@ -238,6 +242,7 @@ def run_generative_task(model, train_data, train_task_ids, test_data, test_task_
 
     print('TASK ', task_idx)
 
+    
     # separate optimizer for each task
     optimizer = optimizer if optimizer is not None else optim.Adam(model.parameters(), lr=lr)
     head = task_idx if multiheaded else 0

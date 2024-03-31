@@ -1,58 +1,53 @@
-import os
-from datetime import datetime
-
 import torch
 import torch.optim as optim
-from tensorboardX import SummaryWriter
-from torch.utils.data import ConcatDataset
-from torchvision.datasets import MNIST, CIFAR10, CIFAR100
-from torchvision.transforms import Compose, ToTensor, Normalize, Lambda
 import numpy as np
-
-from models.vcl_nn import DiscriminativeVCL
+from torchvision.datasets import MNIST, CIFAR10, CIFAR100
+from torchvision.transforms import Compose, ToTensor, Normalize
+from torch.utils.data import ConcatDataset
+from models.contrib import ResNetVCL, ConvVCL, PartialConvVCL
 from models.coreset import RandomCoreset
 from util.experiment_utils import run_point_estimate_initialisation, run_task
 from util.transforms import Flatten, Scale, Permute, Permute2D
 from util.datasets import NOTMNIST
+from tensorboardX import SummaryWriter
+import os
+from datetime import datetime
 
 USER = os.environ['USER']
 
-MNIST_FLATTENED_DIM = 28 * 28
-LR = 0.001
-INITIAL_POSTERIOR_VAR = 1e-3
-
-CIFAR_DIM = 3 * 32 * 32  # CIFAR10 images are 32x32 pixels with 3 color channels
-
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 print("Running on device", device)
+torch.manual_seed(1)
 
+LR = 0.001
+INITIAL_POSTERIOR_VAR = 1e-3
+MNIST_FLATTENED_DIM = 28 * 28  # Flattened dimension of MNIST images
+CIFAR_DIM = 32 * 32  # CIFAR10 images are 32x32 pixels with 3 color channels
 
 def permuted_cifar10():
-    N_CLASSES = 10  # For CIFAR10's 10 classes
-    LAYER_WIDTH = 256
-    N_HIDDEN_LAYERS = 2
+    N_CLASSES = 10
+    N_LAYERS = 1
+    LAYER_WIDTH = 128
     N_TASKS = 10
     MULTIHEADED = False
-    CORESET_SIZE = 200
-    EPOCHS = 10
-    BATCH_SIZE = 1024
+    CORESET_SIZE = 500
+    EPOCHS = 100
+    BATCH_SIZE = 256
     TRAIN_FULL_CORESET = True
 
     # Normalization for CIFAR10
     normalize = Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 
-    # Define the Flatten, Scale (Normalize here), and Permute transformations
+    # permutation used for each task
     transforms = [Compose([
-        Permute2D(torch.randperm(CIFAR_DIM // 3)),
-        normalize,
-        Flatten()
+        Permute2D(torch.randperm(CIFAR_DIM)),
+        normalize
     ]) for _ in range(N_TASKS)]
 
-    model = DiscriminativeVCL(
-        in_size=CIFAR_DIM, out_size=N_CLASSES,
-        layer_width=LAYER_WIDTH, n_hidden_layers=N_HIDDEN_LAYERS,
-        n_heads=(N_TASKS if MULTIHEADED else 1),
-        initial_posterior_var=INITIAL_POSTERIOR_VAR
+    # create model, single-headed in permuted CIFAR experiment
+    model = ConvVCL(
+        input_dims=(3,32,32), n_hidden_layers=N_LAYERS, hidden_dim=LAYER_WIDTH, n_heads=(N_TASKS if MULTIHEADED else 1),
+        num_classes=N_CLASSES, initial_posterior_variance=INITIAL_POSTERIOR_VAR, device=device
     ).to(device)
 
     coreset = RandomCoreset(size=CORESET_SIZE)
@@ -74,7 +69,7 @@ def permuted_cifar10():
         [torch.full((task_size,), id) for id in range(N_TASKS)]
     )
 
-    summary_logdir = os.path.join("logs", "disc_p_cifar10", datetime.now().strftime('%b%d_%H-%M-%S'))
+    summary_logdir = os.path.join("logs", "disc_conv_p_cifar10", datetime.now().strftime('%b%d_%H-%M-%S'))
     writer = SummaryWriter(summary_logdir)
 
     run_point_estimate_initialisation(model=model, data=cifar_train,
@@ -83,12 +78,13 @@ def permuted_cifar10():
                                       multiheaded=MULTIHEADED,
                                       task_ids=train_task_ids)
 
+    # each task is classification of CIFAR images with permuted pixels
     for task in range(N_TASKS):
         run_task(
             model=model, train_data=cifar_train, train_task_ids=train_task_ids,
             test_data=cifar_test, test_task_ids=test_task_ids, task_idx=task,
             coreset=coreset, epochs=EPOCHS, batch_size=BATCH_SIZE,
-            device=device, lr=LR, save_as=f"disc_p_cifar10_{{datetime.now().strftime('%b%d_%H-%M-%S')}}",
+            device=device, lr=LR, save_as="disc_conv_p_cifar10",
             multiheaded=MULTIHEADED, train_full_coreset=TRAIN_FULL_CORESET,
             summary_writer=writer
         )
@@ -96,29 +92,28 @@ def permuted_cifar10():
     writer.close()
 
 
-
-def split_cifar10():
+def split_cifar10(partial=False):
     """
     Runs the 'Split CIFAR10' experiment, in which each task is
     a binary classification task carried out on a subset of the CIFAR10 dataset.
     """
-    N_CLASSES = 2 
+    N_CLASSES = 2
+    N_HIDDEN_LAYERS = 1
     LAYER_WIDTH = 128
-    N_HIDDEN_LAYERS = 2
     N_TASKS = 5
     MULTIHEADED = True
-    CORESET_SIZE = 200
-    EPOCHS = 80
+    CORESET_SIZE = 100
+    EPOCHS = 100
     BATCH_SIZE = 256
-    TRAIN_FULL_CORESET = False
+    TRAIN_FULL_CORESET = True
 
     # Normalization for CIFAR10
     normalize = Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
 
+    # permutation used for each task
     transform = Compose([
         ToTensor(),
-        normalize,
-        Flatten()
+        normalize
     ])
 
     # download dataset
@@ -126,12 +121,12 @@ def split_cifar10():
     cifar_test = CIFAR10(root=f"/scratch-ssd/{USER}/cache", train=False, download=False, transform=transform)
     # cifar_train = CIFAR10(root=f"/scratch-ssd/oatml/data", train=True, download=False, transform=transform)
     # cifar_test = CIFAR10(root=f"/scratch-ssd/oatml/data", train=False, download=False, transform=transform)
+
     
-    model = DiscriminativeVCL(
-        in_size=CIFAR_DIM, out_size=N_CLASSES,
-        layer_width=LAYER_WIDTH, n_hidden_layers=N_HIDDEN_LAYERS,
-        n_heads=(N_TASKS if MULTIHEADED else 1),
-        initial_posterior_var=INITIAL_POSTERIOR_VAR
+    # cls = PartialConvVCL if partial else ConvVCL
+    model = ConvVCL(
+        input_dims=(3,32,32), n_hidden_layers=N_HIDDEN_LAYERS, hidden_dim=LAYER_WIDTH, num_tasks=(N_TASKS if MULTIHEADED else 1),
+        num_classes_per_task=N_CLASSES, initial_posterior_variance=INITIAL_POSTERIOR_VAR, device=device
     ).to(device)
 
     coreset = RandomCoreset(size=CORESET_SIZE)
@@ -151,29 +146,30 @@ def split_cifar10():
         train_task_ids = torch.Tensor([label_to_task_mapping[y.item()] for _, y in cifar_train])
         test_task_ids = torch.Tensor([label_to_task_mapping[y.item()] for _, y in cifar_test])
 
-    summary_logdir = os.path.join("logs", "disc_s_cifar10", datetime.now().strftime('%b%d_%H-%M-%S'))
+    summary_logdir = os.path.join("logs", "disc_conv_s_cifar10", datetime.now().strftime('%b%d_%H-%M-%S'))
     writer = SummaryWriter(summary_logdir)
 
     # each task is a binary classification task for a different pair of digits
     binarize_y = lambda y, task: (y == (2 * task + 1)).long()
 
-    run_point_estimate_initialisation(model=model, data=cifar_train,
-                                      epochs=EPOCHS, batch_size=BATCH_SIZE,
-                                      device=device, multiheaded=MULTIHEADED,
-                                      lr=LR, task_ids=train_task_ids,
-                                      y_transform=binarize_y)
+    # run_point_estimate_initialisation(model=model, data=cifar_train,
+    #                                   epochs=EPOCHS, batch_size=BATCH_SIZE,
+    #                                   device=device, multiheaded=MULTIHEADED,
+    #                                   lr=LR, task_ids=train_task_ids,
+    #                                   y_transform=binarize_y)
 
     for task_idx in range(N_TASKS):
         run_task(
             model=model, train_data=cifar_train, train_task_ids=train_task_ids,
             test_data=cifar_test, test_task_ids=test_task_ids, coreset=coreset,
             task_idx=task_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LR,
-            save_as=f"disc_s_cifar10_{datetime.now().strftime('%b%d_%H-%M-%S')}_coreset{CORESET_SIZE}", device=device, multiheaded=MULTIHEADED,
+            save_as=f"disc_conv_s_cifar10_{datetime.now().strftime('%b%d_%H-%M-%S')}_coreset{CORESET_SIZE}", device=device, multiheaded=MULTIHEADED,
             y_transform=binarize_y, train_full_coreset=TRAIN_FULL_CORESET,
             summary_writer=writer
         )
 
     writer.close()
+
 
 def split_cifar100():
     """
@@ -181,12 +177,12 @@ def split_cifar100():
     a binary classification task carried out on a subset of the CIFAR10 dataset.
     """
     N_CLASSES = 10
-    LAYER_WIDTH = 256
+    LAYER_WIDTH = 128
     N_HIDDEN_LAYERS = 2
     N_TASKS = 10
     MULTIHEADED = True
     CORESET_SIZE = 100
-    EPOCHS = 200
+    EPOCHS = 100
     BATCH_SIZE = 256
     TRAIN_FULL_CORESET = True
 
@@ -196,19 +192,16 @@ def split_cifar100():
     # permutation used for each task
     transform = Compose([
         ToTensor(),
-        normalize,
-        Flatten()
+        normalize
     ])
 
     # download dataset
     cifar_train = CIFAR100(root=f"/scratch-ssd/{USER}/cache", train=True, download=False, transform=transform)
     cifar_test = CIFAR100(root=f"/scratch-ssd/{USER}/cache", train=False, download=False, transform=transform)
 
-    model = DiscriminativeVCL(
-        in_size=CIFAR_DIM, out_size=N_CLASSES,
-        layer_width=LAYER_WIDTH, n_hidden_layers=N_HIDDEN_LAYERS,
-        n_heads=(N_TASKS if MULTIHEADED else 1),
-        initial_posterior_var=INITIAL_POSTERIOR_VAR
+    model = ConvVCL(
+        input_dims=(3,32,32), n_hidden_layers=N_HIDDEN_LAYERS, hidden_dim=LAYER_WIDTH, num_tasks=(N_TASKS if MULTIHEADED else 1),
+        num_classes_per_task=N_CLASSES, initial_posterior_variance=INITIAL_POSTERIOR_VAR, device=device
     ).to(device)
 
     coreset = RandomCoreset(size=CORESET_SIZE)
@@ -218,7 +211,7 @@ def split_cifar100():
     train_task_ids = torch.Tensor([label_to_task_mapping(y) for _, y in cifar_train])
     test_task_ids = torch.Tensor([label_to_task_mapping(y) for _, y in cifar_test])
 
-    summary_logdir = os.path.join("logs", "disc_s_cifar100", datetime.now().strftime('%b%d_%H-%M-%S'))
+    summary_logdir = os.path.join("logs", "disc_conv_s_cifar100", datetime.now().strftime('%b%d_%H-%M-%S'))
     writer = SummaryWriter(summary_logdir)
 
     # each task is a binary classification task for a different pair of digits
@@ -235,13 +228,12 @@ def split_cifar100():
             model=model, train_data=cifar_train, train_task_ids=train_task_ids,
             test_data=cifar_test, test_task_ids=test_task_ids, coreset=coreset,
             task_idx=task_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LR,
-            save_as=f"disc_s_cifar100_{datetime.now().strftime('%b%d_%H-%M-%S')}_coreset{CORESET_SIZE}", device=device, multiheaded=MULTIHEADED,
+            save_as=f"disc_conv_s_cifar100_{datetime.now().strftime('%b%d_%H-%M-%S')}_coreset{CORESET_SIZE}", device=device, multiheaded=MULTIHEADED,
             y_transform=map_to_under_ten, train_full_coreset=TRAIN_FULL_CORESET,
             summary_writer=writer
         )
 
     writer.close()
-
 
 def permuted_mnist():
     """
@@ -249,8 +241,8 @@ def permuted_mnist():
     is obtained by applying a fixed random permutation to the pixels of each image.
     """
     N_CLASSES = 10
+    N_LAYERS = 2
     LAYER_WIDTH = 100
-    N_HIDDEN_LAYERS = 2
     N_TASKS = 10
     MULTIHEADED = False
     CORESET_SIZE = 200
@@ -258,15 +250,22 @@ def permuted_mnist():
     BATCH_SIZE = 256
     TRAIN_FULL_CORESET = True
 
-    # flattening and permutation used for each task
-    transforms = [Compose([Flatten(), Scale(), Permute(torch.randperm(MNIST_FLATTENED_DIM))]) for _ in range(N_TASKS)]
+    # permutation used for each task
+    transforms = [Compose([
+        Permute2D(torch.randperm(MNIST_FLATTENED_DIM)),
+        Normalize((0.1307,), (0.3081,))  
+    ]) for _ in range(N_TASKS)]
 
     # create model, single-headed in permuted MNIST experiment
-    model = DiscriminativeVCL(
-        in_size=MNIST_FLATTENED_DIM, out_size=N_CLASSES,
-        layer_width=LAYER_WIDTH, n_hidden_layers=N_HIDDEN_LAYERS,
-        n_heads=(N_TASKS if MULTIHEADED else 1),
-        initial_posterior_var=INITIAL_POSTERIOR_VAR
+    # model = ResNetVCL(
+    #     n_heads=(N_TASKS if MULTIHEADED else 1),
+    #     num_classes=N_CLASSES, initial_posterior_variance=INITIAL_POSTERIOR_VAR, device=device
+    # ).to(device)
+
+    
+    model = ConvVCL(
+        input_dims=(1,28,28), n_hidden_layers=N_LAYERS, hidden_dim=LAYER_WIDTH, num_tasks=(N_TASKS if MULTIHEADED else 1),
+        num_classes_per_task=N_CLASSES, initial_posterior_variance=INITIAL_POSTERIOR_VAR, device=device
     ).to(device)
     coreset = RandomCoreset(size=CORESET_SIZE)
 
@@ -286,13 +285,13 @@ def permuted_mnist():
         [torch.full((task_size,), id) for id in range(N_TASKS)]
     )
 
-    summary_logdir = os.path.join("logs", "disc_p_mnist", datetime.now().strftime('%b%d_%H-%M-%S'))
+    summary_logdir = os.path.join("logs", "disc_conv_p_mnist", datetime.now().strftime('%b%d_%H-%M-%S'))
     writer = SummaryWriter(summary_logdir)
-    run_point_estimate_initialisation(model=model, data=mnist_train,
-                                      epochs=EPOCHS, batch_size=BATCH_SIZE,
-                                      device=device, lr=LR,
-                                      multiheaded=MULTIHEADED,
-                                      task_ids=train_task_ids)
+    # run_point_estimate_initialisation(model=model, data=mnist_train,
+    #                                   epochs=EPOCHS, batch_size=BATCH_SIZE,
+    #                                   device=device, lr=LR,
+    #                                   multiheaded=MULTIHEADED,
+    #                                   task_ids=train_task_ids)
 
     # each task is classification of MNIST images with permuted pixels
     for task in range(N_TASKS):
@@ -300,7 +299,7 @@ def permuted_mnist():
             model=model, train_data=mnist_train, train_task_ids=train_task_ids,
             test_data=mnist_test, test_task_ids=test_task_ids, task_idx=task,
             coreset=coreset, epochs=EPOCHS, batch_size=BATCH_SIZE,
-            device=device, lr=LR, save_as="disc_p_mnist",
+            device=device, lr=LR, save_as=f"disc_conv_p_mnist_{datetime.now().strftime('%b%d_%H-%M-%S')}",
             multiheaded=MULTIHEADED, train_full_coreset=TRAIN_FULL_CORESET,
             summary_writer=writer
         )
@@ -313,29 +312,30 @@ def split_mnist():
     Runs the 'Split MNIST' experiment from the VCL paper, in which each task is
     a binary classification task carried out on a subset of the MNIST dataset.
     """
-    N_CLASSES = 2 # TODO does it make sense to do binary classification with out_size=2 ?
+    N_CLASSES = 2 # TODO does it make sense to do binary classification with out_size=2 ? It does not make sense :(
     LAYER_WIDTH = 256
-    N_HIDDEN_LAYERS = 2
+    N_LAYERS = 1
     N_TASKS = 5
     MULTIHEADED = True
     CORESET_SIZE = 40
-    EPOCHS = 40
+    EPOCHS = 100
     BATCH_SIZE = 256
     TRAIN_FULL_CORESET = True
 
-    transform = Compose([Flatten(), Scale()])
+    transform = Compose([
+        ToTensor(),
+        Normalize((0.1307,), (0.3081,))  
+    ])
 
     # download dataset
     mnist_train = MNIST(root="data", train=True, download=True, transform=transform)
     mnist_test = MNIST(root="data", train=False, download=True, transform=transform)
-
-    model = DiscriminativeVCL(
-        in_size=MNIST_FLATTENED_DIM, out_size=N_CLASSES,
-        layer_width=LAYER_WIDTH, n_hidden_layers=N_HIDDEN_LAYERS,
-        n_heads=(N_TASKS if MULTIHEADED else 1),
-        initial_posterior_var=INITIAL_POSTERIOR_VAR
+   
+    model = ConvVCL(
+        input_dims=(1,28,28), n_hidden_layers=N_LAYERS, hidden_dim=LAYER_WIDTH, num_tasks=(N_TASKS if MULTIHEADED else 1),
+        num_classes_per_task=N_CLASSES, initial_posterior_variance=INITIAL_POSTERIOR_VAR, device=device
     ).to(device)
-
+    
     coreset = RandomCoreset(size=CORESET_SIZE)
 
     label_to_task_mapping = {
@@ -353,24 +353,24 @@ def split_mnist():
         train_task_ids = torch.Tensor([label_to_task_mapping[y.item()] for _, y in mnist_train])
         test_task_ids = torch.Tensor([label_to_task_mapping[y.item()] for _, y in mnist_test])
 
-    summary_logdir = os.path.join("logs", "disc_s_mnist", datetime.now().strftime('%b%d_%H-%M-%S'))
+    summary_logdir = os.path.join("logs", "disc_conv_s_mnist", datetime.now().strftime('%b%d_%H-%M-%S'))
     writer = SummaryWriter(summary_logdir)
 
     # each task is a binary classification task for a different pair of digits
     binarize_y = lambda y, task: (y == (2 * task + 1)).long()
 
-    run_point_estimate_initialisation(model=model, data=mnist_train,
-                                      epochs=EPOCHS, batch_size=BATCH_SIZE,
-                                      device=device, multiheaded=MULTIHEADED,
-                                      lr=LR, task_ids=train_task_ids,
-                                      y_transform=binarize_y)
+    # run_point_estimate_initialisation(model=model, data=mnist_train,
+    #                                   epochs=EPOCHS, batch_size=BATCH_SIZE,
+    #                                   device=device, multiheaded=MULTIHEADED,
+    #                                   lr=LR, task_ids=train_task_ids,
+    #                                   y_transform=binarize_y)
 
     for task_idx in range(N_TASKS):
         run_task(
             model=model, train_data=mnist_train, train_task_ids=train_task_ids,
             test_data=mnist_test, test_task_ids=test_task_ids, coreset=coreset,
             task_idx=task_idx, epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LR,
-            save_as="disc_s_mnist", device=device, multiheaded=MULTIHEADED,
+            save_as=f"disc_conv_s_mnist_{datetime.now().strftime('%b%d_%H-%M-%S')}", device=device, multiheaded=MULTIHEADED,
             y_transform=binarize_y, train_full_coreset=TRAIN_FULL_CORESET,
             summary_writer=writer
         )
@@ -385,26 +385,25 @@ def split_not_mnist():
     character recognition dataset.
     """
     N_CLASSES = 2 # TODO does it make sense to do binary classification with out_size=2 ?
-    LAYER_WIDTH = 150
-    N_HIDDEN_LAYERS = 4
+    LAYER_WIDTH = 128
+    N_LAYERS = 1
     N_TASKS = 5
     MULTIHEADED = True
     CORESET_SIZE = 40
-    EPOCHS = 120
-    BATCH_SIZE = 400000
+    EPOCHS = 150
+    BATCH_SIZE = 4096
     TRAIN_FULL_CORESET = True
 
-    transform = Compose([Flatten(), Scale()])
+    transform = Compose([ToTensor(),  Scale()])
 
     not_mnist_train = NOTMNIST(train=True, overwrite=False, transform=transform)
     not_mnist_test = NOTMNIST(train=False, overwrite=False, transform=transform)
 
-    model = DiscriminativeVCL(
-        in_size=MNIST_FLATTENED_DIM, out_size=N_CLASSES,
-        layer_width=LAYER_WIDTH, n_hidden_layers=N_HIDDEN_LAYERS,
-        n_heads=(N_TASKS if MULTIHEADED else 1),
-        initial_posterior_var=INITIAL_POSTERIOR_VAR
+    model = ConvVCL(
+        input_dims=(1,28,28), n_hidden_layers=N_LAYERS, hidden_dim=LAYER_WIDTH, num_tasks=(N_TASKS if MULTIHEADED else 1),
+        num_classes_per_task=N_CLASSES, initial_posterior_variance=INITIAL_POSTERIOR_VAR, device=device
     ).to(device)
+    
     optimizer = optim.Adam(model.parameters(), lr=LR)
     coreset = RandomCoreset(size=CORESET_SIZE)
 
@@ -420,7 +419,8 @@ def split_not_mnist():
     train_task_ids = torch.from_numpy(np.array([label_to_task_mapping[y] for _, y in not_mnist_train]))
     test_task_ids = torch.from_numpy(np.array([label_to_task_mapping[y] for _, y in not_mnist_test]))
 
-    summary_logdir = os.path.join("logs", "disc_s_n_mnist", datetime.now().strftime('%b%d_%H-%M-%S'))
+    time = datetime.now().strftime('%b%d_%H-%M-%S')
+    summary_logdir = os.path.join("logs", "disc_conv_s_n_mnist", time)
     writer = SummaryWriter(summary_logdir)
 
     # each task is a binary classification task for a different pair of digits
@@ -428,17 +428,17 @@ def split_not_mnist():
     binarize_y = lambda y, task: (y == task).long()
 
     # run_point_estimate_initialisation(model=model, data=not_mnist_train,
-    #                                   epochs=EPOCHS, batch_size=BATCH_SIZE,
-    #                                   device=device, multiheaded=MULTIHEADED,
-    #                                   task_ids=train_task_ids, lr=LR,
-    #                                   y_transform=binarize_y)
+                                      # epochs=EPOCHS, batch_size=BATCH_SIZE,
+                                      # device=device, multiheaded=MULTIHEADED,
+                                      # task_ids=train_task_ids, lr=LR,
+                                      # y_transform=binarize_y)
 
     for task_idx in range(N_TASKS):
         run_task(
             model=model, train_data=not_mnist_train, train_task_ids=train_task_ids,
             test_data=not_mnist_test, test_task_ids=test_task_ids,
             coreset=coreset, task_idx=task_idx, epochs=EPOCHS, lr=LR,
-            batch_size=BATCH_SIZE, save_as="disc_s_n_mnist", device=device,
+            batch_size=BATCH_SIZE, save_as=f"disc_conv_s_n_mnist_{time}", device=device,
             multiheaded=MULTIHEADED, y_transform=binarize_y,
             train_full_coreset=TRAIN_FULL_CORESET, summary_writer=writer
         )

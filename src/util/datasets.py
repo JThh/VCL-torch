@@ -4,11 +4,15 @@ import urllib.request
 import torch.utils.data
 from PIL import Image
 
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, Dataset
+import torch
+
 _NOT_MNIST_URL_L = 'http://yaroslavvb.com/upload/notMNIST/notMNIST_large.tar.gz'
 _NOT_MNIST_URL_S = 'http://yaroslavvb.com/upload/notMNIST/notMNIST_small.tar.gz'
 _NM_FILE_L = 'notMNIST_large.tar.gz'
 _NM_FILE_S = 'notMNIST_small.tar.gz'
-_DATA_DIR = 'data'
+_DATA_DIR = f"/scratch-ssd/{os.environ['USER']}/"
 _ASCII_A = 65
 
 

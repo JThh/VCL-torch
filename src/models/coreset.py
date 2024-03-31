@@ -42,7 +42,7 @@ class Coreset():
         if self.coreset is None:
             return m
 
-        model = deepcopy(m)
+        model = deepcopy(m).to(device)
 
         optimizer = optim.Adam(model.parameters(), lr=self.lr)
         optimizer.load_state_dict(old_optimizer.state_dict())
@@ -92,7 +92,7 @@ class Coreset():
         if self.coreset is None:
             return m
 
-        model = deepcopy(m)
+        model = deepcopy(m).to(device)
 
         optimizer = optim.Adam(model.parameters(), lr=self.lr)
         optimizer.load_state_dict(old_optimizer.state_dict())
@@ -121,23 +121,27 @@ class RandomCoreset(Coreset):
     def __init__(self, size):
         super().__init__(size)
 
+
     def select(self, d : data.Dataset, task_id : int):
 
         new_cs_data, non_cs = data.random_split(d, [self.size, max(0,len(d)-self.size)])
 
-        # Need to split the x from the y values to also include the task values.
-        # I don't like this way of doing it, but I couldn't find something better.
-        new_cs_x = torch.tensor([x for x, _ in new_cs_data])
-        new_cs_y = torch.tensor([y for _, y in new_cs_data])
+        # Process the datasets to extract and transform the images and labels
+        new_cs_x = [torch.tensor(x) for x, _ in [new_cs_data[i] for i in range(len(new_cs_data))]]
+        new_cs_y = [torch.tensor(y) for _, y in [new_cs_data[i] for i in range(len(new_cs_data))]]
 
-        new_cs = data.TensorDataset(new_cs_x, new_cs_y)
-        new_task_ids = torch.full((len(new_cs_data),), task_id)
+        # Convert lists to tensors
+        new_cs_x = torch.stack(new_cs_x)  # Stack to create a single tensor
+        new_cs_y = torch.tensor(new_cs_y, dtype=torch.long)  # Ensure labels are of type long
+
+        new_cs = data.TensorDataset(new_cs_x, new_cs_y)  # Create a new TensorDataset
+        new_task_ids = torch.full((len(new_cs_data),), task_id, dtype=torch.long)  # Ensure task_ids are of type long
 
         if self.coreset is None:
             self.coreset = new_cs
             self.coreset_task_ids = new_task_ids
         else:
-            self.coreset = data.ConcatDataset((self.coreset, new_cs))
+            self.coreset = data.ConcatDataset([self.coreset, new_cs])
             self.coreset_task_ids = torch.cat((self.coreset_task_ids, new_task_ids))
 
         return non_cs

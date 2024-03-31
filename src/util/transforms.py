@@ -1,4 +1,6 @@
 import numpy as np
+from torchvision.transforms import ToTensor
+import torch
 
 
 class Flatten(object):
@@ -26,3 +28,28 @@ class Permute(object):
 
     def __call__(self, sample):
         return sample[self.permutation]
+
+
+class Permute2D:
+    def __init__(self, perm):
+        """
+        Args:
+            perm (Tensor): The permutation to apply to the 2D images.
+        """
+        self.perm = perm
+
+    def __call__(self, img):
+        """
+        Args:
+            img (PIL Image or Tensor): Image to be permuted.
+
+        Returns:
+            Tensor: Permuted image.
+        """
+        if not isinstance(img, torch.Tensor):
+            img = ToTensor()(img)  # Convert PIL image to tensor
+        C, H, W = img.shape
+        img = img.view(C, -1)  # Flatten spatial dimensions
+        img = img[:, self.perm]  # Apply permutation
+        img = img.view(C, H, W)  # Reshape back to original spatial dimensions
+        return img

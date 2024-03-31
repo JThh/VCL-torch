@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from layers.variational import VariationalLayer, MeanFieldGaussianLinear
+from layers.variational import VariationalLayer, MeanFieldGaussianLinear, MeanFieldGaussianConv2d, BasicBlockVCL, CustomSequential
 from models.deep_models import Encoder
 from util.operations import kl_divergence, bernoulli_log_likelihood, normal_with_reparameterization
 
@@ -32,6 +32,235 @@ class VCL(nn.Module, ABC):
     @abstractmethod
     def get_statistics(self) -> (list, dict):
         pass
+
+
+class ResNetVCL(nn.Module):
+    def __init__(self, block, num_blocks, num_tasks, num_classes_per_task, in_channels=3, initial_posterior_variance=1e-6, epsilon=1e-8, mc_sampling_n=10, device=torch.device('cuda:0')):
+        super(ResNetVCL, self).__init__()
+        self.device = device                
+        self.mc_sampling_n = mc_sampling_n
+        self.ipv = initial_posterior_variance
+        self.epsilon = epsilon
+        self.num_tasks = num_tasks
+        self.num_classes_per_task = num_classes_per_task
+        self.in_planes = 64
+
+        # Initial convolutional layer
+        self.conv1 = MeanFieldGaussianConv2d(in_channels, 64, kernel_size=3, stride=1, padding=1, initial_posterior_variance=self.ipv, epsilon=self.epsilon)
+        self.bn1 = nn.BatchNorm2d(64)
+
+        # Layers defined by the ResNet block structure
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 128, num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(block, 256, num_blocks[1], stride=2)
+        self.layer4 = self._make_layer(block, 512, num_blocks[1], stride=2)
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+
+        # Task-specific heads
+        self.task_specific_heads = nn.ModuleList()
+        for _ in range(num_tasks):
+            head = MeanFieldGaussianLinear(512 * block.expansion, num_classes_per_task, initial_posterior_variance=self.ipv, epsilon=self.epsilon)
+            self.task_specific_heads.append(head)
+
+        self.softmax = nn.Softmax(dim=1)
+
+    def _make_layer(self, block, planes, num_blocks, stride):
+        strides = [stride] + [1]*(num_blocks-1)
+        layers = []
+        for stride in strides:
+            layers.append(block(self.in_planes, planes, stride))
+            self.in_planes = planes * block.expansion
+        return CustomSequential(*layers)
+
+    def forward(self, x, task_idx=0, sample_parameters=True):
+        out = F.relu(self.bn1(self.conv1(x, sample_parameters)))
+        # out = F.relu((self.conv1(x, sample_parameters)))
+        out = self.layer1(out, sample_parameters)
+        out = self.layer2(out, sample_parameters)
+        out = self.layer3(out, sample_parameters)
+        out = self.layer4(out, sample_parameters)
+        out = self.avgpool(out)
+        out = torch.flatten(out, 1)
+        out = self.task_specific_heads[task_idx](out, sample_parameters)
+        out = self.softmax(out)
+        return out
+
+    def _kl_divergence(self, task_idx):
+        kl_divergence = self.conv1.kl_divergence()
+        kl_divergence += self.layer1.kl_divergence(self.device)
+        kl_divergence += self.layer2.kl_divergence(self.device)
+        kl_divergence += self.layer3.kl_divergence(self.device)
+        kl_divergence += self.layer4.kl_divergence(self.device)
+        kl_divergence += self.task_specific_heads[task_idx].kl_divergence()
+        return kl_divergence
+
+    def reset_for_new_task(self, task_idx):
+        self.conv1.reset_for_next_task()
+        self.task_specific_heads[task_idx].reset_for_next_task()
+        self.layer1.reset_for_next_task()
+        self.layer2.reset_for_next_task()
+        self.layer3.reset_for_next_task()
+        self.layer4.reset_for_next_task()
+
+    def vcl_loss(self, x, y, task_idx, task_size):
+        return self._kl_divergence(task_idx) / task_size + torch.nn.NLLLoss()(self(x, task_idx), y)
+
+    def point_estimate_loss(self, x, y, task_idx):
+        return torch.nn.NLLLoss()(self(x, task_idx, sample_parameters=False), y)
+
+    def prediction(self, x, task_idx):
+        """ Returns an integer between 0 and self.out_size """
+        return torch.argmax(self(x, task_idx), dim=1)
+
+    def get_statistics(self) -> (list, dict):
+        pass
+
+    def _mean_posterior_variance(self):
+        """
+        Return the mean posterior variance for logging purposes.
+        Excludes the head layer.
+        """
+        posterior_vars = []
+    
+        for layer in [self.conv1, self.layer1, self.layer2, self.layer3, self.layer4]:
+            if isinstance(layer, VariationalLayer):
+                stats = layer.get_statistics()
+                layer_vars = torch.cat([torch.flatten(stats['w_var']).to(torch.device('cpu')), torch.flatten(stats['b_var']).to(torch.device('cpu'))])
+                
+            posterior_vars.append(layer_vars)
+        
+        all_variances = torch.cat(posterior_vars)
+        return torch.mean(all_variances).item()
+
+
+class ConvVCL(nn.Module):
+    def __init__(self, input_dims=(1,28,28), n_hidden_layers=1, hidden_dim=512, num_tasks=5, num_classes_per_task=10, initial_posterior_variance=1e-6, epsilon=1e-8, mc_sampling_n=10, device=torch.device('cpu')):
+        super(ConvVCL, self).__init__()
+        self.device = device                
+        self.mc_sampling_n = mc_sampling_n
+        self.ipv = initial_posterior_variance
+        self.epsilon = epsilon
+        self.num_tasks = num_tasks
+        self.num_classes_per_task = num_classes_per_task
+
+        # Convolutional layers
+        self.conv1 = MeanFieldGaussianConv2d(input_dims[0], 64, kernel_size=3, stride=1, padding=1, initial_posterior_variance=self.ipv, epsilon=self.epsilon).to(device)
+        self.conv2 = MeanFieldGaussianConv2d(64, 128, kernel_size=3, stride=1, padding=1, initial_posterior_variance=self.ipv, epsilon=self.epsilon).to(device)
+        self.conv3 = MeanFieldGaussianConv2d(128, 256, kernel_size=3, stride=1, padding=1, initial_posterior_variance=self.ipv, epsilon=self.epsilon).to(device)
+        self.shared_conv_layers = nn.ModuleList([self.conv1, self.conv2, self.conv3])
+
+        # Calculate the output size after convolutional layers
+        fake_input = torch.zeros(1, *input_dims).to(device)
+        fake_output = self.conv_forward(fake_input)
+        conv_output_size = fake_output.view(-1).shape[0]
+
+        # Integrated task-specific linear layers and heads
+        self.task_specific_layers = nn.ModuleList()
+        for _ in range(num_tasks):
+            layers = []
+            shared_dims = [conv_output_size] + [hidden_dim for _ in range(n_hidden_layers)] + [num_classes_per_task]
+            for i in range(len(shared_dims) - 1):
+                layer = MeanFieldGaussianLinear(shared_dims[i], shared_dims[i + 1], initial_posterior_variance=self.ipv, epsilon=self.epsilon).to(device)
+                layers.append(layer)
+            self.task_specific_layers.append(nn.Sequential(*layers))
+
+        self.softmax = nn.Softmax(dim=1)
+
+    def conv_forward(self, x, sample_parameters=True):
+        out = F.relu(self.conv1(x, sample_parameters))
+        out = F.max_pool2d(out, 2)
+        out = F.relu(self.conv2(out, sample_parameters))
+        out = F.max_pool2d(out, 2)
+        out = F.relu(self.conv3(out, sample_parameters))
+        out = F.max_pool2d(out, 2)
+        return out
+
+    def forward(self, x, task_idx=0, sample_parameters=True):
+        y_out = torch.zeros(size=(x.shape[0], self.num_classes_per_task)).to(self.device)
+
+        for _ in range(self.mc_sampling_n if sample_parameters else 1):
+            out = self.conv_forward(x, sample_parameters)
+            out = out.view(out.size(0), -1)  # Flatten the output of conv layers
+            out = self.task_specific_layers[task_idx](out)
+            y_out.add_(self.softmax(out))
+
+        y_out.div_(self.mc_sampling_n if sample_parameters else 1)
+        return y_out
+
+    def vcl_loss(self, x, y, task_idx, task_size):
+        output = self.forward(x, task_idx)
+        return self._kl_divergence(task_idx) / task_size + nn.NLLLoss()(output, y)
+
+    def prediction(self, x, task_idx):
+        """Returns the predicted class for the given task."""
+        output = self.forward(x, task_idx, sample_parameters=False)
+        return torch.argmax(output, dim=1)
+
+    def point_estimate_loss(self, x, y, task_idx):
+        output = self.forward(x, task_idx, sample_parameters=False)
+        return torch.nn.NLLLoss()(output, y)
+
+    def _kl_divergence(self, task_idx) -> torch.Tensor:
+        kl_divergence = torch.zeros(1, device=self.device, dtype=torch.float32)
+
+        # Compute KL divergence for conv layers
+        for conv in self.shared_conv_layers:
+            kl_divergence += conv.kl_divergence()
+
+        # Compute KL divergence for task-specific layers
+        for layer in self.task_specific_layers[task_idx]:
+            kl_divergence += layer.kl_divergence()
+
+        return kl_divergence
+
+    def reset_for_new_task(self, task_idx):
+        for conv in self.shared_conv_layers:
+            conv.reset_for_next_task()
+        for layer in self.task_specific_layers[task_idx]:
+            layer.reset_for_next_task()
+
+    def get_statistics(self) -> (list, dict):
+        pass
+
+    def _mean_posterior_variance(self):
+        """
+        Return the mean posterior variance for logging purposes.
+        Excludes the head layer.
+        """
+        posterior_vars = []
+    
+        for layer in self.shared_conv_layers:
+            if isinstance(layer, VariationalLayer):
+                stats = layer.get_statistics()
+                layer_vars = torch.cat([torch.flatten(stats['w_var']).to(torch.device('cpu')), torch.flatten(stats['b_var']).to(torch.device('cpu'))])
+                posterior_vars.append(layer_vars)
+        
+        all_variances = torch.cat(posterior_vars)
+        return torch.mean(all_variances).item()
+
+
+
+class PartialConvVCL(ConvVCL):
+    """
+    Make only heads and shared linear layers variational (with backbone based on non-variational convs).
+    """
+    def __init__(self, input_dims=(1,28,28), n_hidden_layers=1, hidden_dim=512, num_tasks=5, num_classes_per_task=10, initial_posterior_variance=1e-6, epsilon=1e-8, mc_sampling_n=10, device=torch.device('cpu')):
+        super(PartialConvVCL, self).__init__(input_dims, n_hidden_layers, hidden_dim, n_heads, num_classes, initial_posterior_variance, epsilon, mc_sampling_n, device)
+
+        self.conv1 = nn.Conv2d(input_dims[0], 64, kernel_size=3, stride=1, padding=1).to(device)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1).to(device)
+        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1).to(device)
+    
+        self.shared_conv_layers = nn.ModuleList([self.conv1, self.conv2, self.conv3])
+
+    def conv_forward(self, x, sample_parameters=True):
+        out = F.relu(self.conv1(x))
+        out = F.max_pool2d(out, 2)
+        out = F.relu(self.conv2(out))
+        out = F.max_pool2d(out, 2)
+        out = F.relu(self.conv3(out))
+        out = F.max_pool2d(out, 2)
+        return out
 
 
 class DiscriminativeVCL(VCL):
